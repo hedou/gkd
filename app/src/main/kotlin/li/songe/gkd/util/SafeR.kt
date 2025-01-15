@@ -3,27 +3,16 @@ package li.songe.gkd.util
 import li.songe.gkd.R
 
 /**
- * https://github.com/gkd-kit/gkd/assets/38517192/48c857e6-a384-4008-93ab-b3214ae757eb
+ * ![image](https://github.com/gkd-kit/gkd/assets/38517192/c9325110-d90f-4041-a01d-404d14c5d34d)
  */
-@Suppress("UNRESOLVED_REFERENCE", "UNUSED")
+@Suppress("UNRESOLVED_REFERENCE") // fix android studio can't find R
 object SafeR {
-    val ic_capture: Int = R.drawable.ic_capture
-    val ic_add: Int = R.drawable.ic_add
-    val ic_app_2: Int = R.drawable.ic_app_2
-    val ic_apps: Int = R.drawable.ic_apps
-    val ic_back: Int = R.drawable.ic_back
-    val ic_chart_bar: Int = R.drawable.ic_chart_bar
-    val ic_cog: Int = R.drawable.ic_cog
-    val ic_create_round: Int = R.drawable.ic_create_round
-    val ic_database_set: Int = R.drawable.ic_database_set
-    val ic_del: Int = R.drawable.ic_del
-    val ic_launcher: Int = R.drawable.ic_launcher
-    val ic_launcher_background: Int = R.drawable.ic_launcher_background
-    val ic_launcher_round: Int = R.drawable.ic_launcher_round
-    val ic_link: Int = R.drawable.ic_link
-    val ic_menu: Int = R.drawable.ic_menu
-    val ic_refresh: Int = R.drawable.ic_refresh
-    val ic_share: Int = R.drawable.ic_share
-    val ic_home: Int = R.drawable.ic_home
-    val ic_info: Int = R.drawable.ic_info
+    val app_name: Int = R.string.app_name
+    val ic_status: Int = R.drawable.ic_status
+    val ic_page_info: Int = R.drawable.ic_page_info
+    val ic_flash_on: Int = R.drawable.ic_flash_on
+    val ic_flash_off: Int = R.drawable.ic_flash_off
+    val ic_logo_animation: Int = R.drawable.ic_logo_animation
+    val better_black: Int = R.color.better_black
+    val better_white: Int = R.color.better_white
 }

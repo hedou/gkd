@@ -1,6 +1,5 @@
 package li.songe.gkd.util
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Activity.RESULT_OK
 import android.content.Context
@@ -16,15 +15,16 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.Looper
 import com.blankj.utilcode.util.ScreenUtils
-import li.songe.gkd.util.Ext.isEmptyBitmap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
 // https://github.com/npes87184/ScreenShareTile/blob/master/app/src/main/java/com/npes87184/screenshottile/ScreenshotService.kt
 
-@SuppressLint("WrongConstant")
-class ScreenshotUtil(private val context: Context, private val screenshotIntent: Intent) {
+class ScreenshotUtil(
+    private val context: Context,
+    private val screenshotIntent: Intent
+) {
 
     private val handler by lazy { Handler(Looper.getMainLooper()) }
     private var virtualDisplay: VirtualDisplay? = null
@@ -38,6 +38,13 @@ class ScreenshotUtil(private val context: Context, private val screenshotIntent:
         ) as MediaProjectionManager
     }
 
+    private val width: Int
+        get() = ScreenUtils.getScreenWidth()
+    private val height: Int
+        get() = ScreenUtils.getScreenHeight()
+    private val dpi: Int
+        get() = ScreenUtils.getScreenDensityDpi()
+
     fun destroy() {
         imageReader?.setOnImageAvailableListener(null, null)
         virtualDisplay?.release()
@@ -46,7 +53,7 @@ class ScreenshotUtil(private val context: Context, private val screenshotIntent:
     }
 
     //    TODO android13 上一半概率获取到全透明图片, android12 暂无此问题
-    suspend fun execute() = suspendCoroutine<Bitmap> { block ->
+    suspend fun execute() = suspendCoroutine { block ->
         imageReader = ImageReader.newInstance(
             width, height,
             PixelFormat.RGBA_8888, 2
@@ -101,11 +108,5 @@ class ScreenshotUtil(private val context: Context, private val screenshotIntent:
                 image?.close()
             }
         }, handler)
-    }
-
-    companion object {
-        private val width by lazy { ScreenUtils.getScreenWidth() }
-        private val height by lazy { ScreenUtils.getScreenHeight() }
-        private val dpi by lazy { ScreenUtils.getScreenDensityDpi() }
     }
 }

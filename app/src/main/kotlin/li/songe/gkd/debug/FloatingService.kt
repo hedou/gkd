@@ -1,38 +1,40 @@
 package li.songe.gkd.debug
 
-import android.content.Context
 import android.content.Intent
 import android.view.ViewConfiguration
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CenterFocusWeak
 import androidx.compose.material3.Icon
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import com.blankj.utilcode.util.ToastUtils
 import com.torrydo.floatingbubbleview.FloatingBubbleListener
 import com.torrydo.floatingbubbleview.service.expandable.BubbleBuilder
-import kotlinx.coroutines.Dispatchers
+import com.torrydo.floatingbubbleview.service.expandable.ExpandableBubbleService
 import kotlinx.coroutines.flow.MutableStateFlow
 import li.songe.gkd.app
 import li.songe.gkd.appScope
-import li.songe.gkd.composition.CompositionExt.useLifeCycleLog
-import li.songe.gkd.composition.CompositionFbService
-import li.songe.gkd.data.Tuple3
-import li.songe.gkd.notif.createNotif
-import li.songe.gkd.notif.floatingChannel
 import li.songe.gkd.notif.floatingNotif
-import li.songe.gkd.util.SafeR
+import li.songe.gkd.notif.notifyService
+import li.songe.gkd.permission.canDrawOverlaysState
+import li.songe.gkd.permission.notificationState
 import li.songe.gkd.util.launchTry
 import kotlin.math.sqrt
 
-class FloatingService : CompositionFbService({
-    useLifeCycleLog()
+class FloatingService : ExpandableBubbleService() {
+    override fun configExpandedBubble() = null
 
-    configBubble { resolve ->
+    override fun onCreate() {
+        super.onCreate()
+        isRunning.value = true
+        minimize()
+    }
+
+    override fun configBubble(): BubbleBuilder {
         val builder = BubbleBuilder(this).bubbleCompose {
             Icon(
-                painter = painterResource(SafeR.ic_capture),
+                imageVector = Icons.Default.CenterFocusWeak,
                 contentDescription = "capture",
                 modifier = Modifier.size(40.dp),
                 tint = Color.Red
@@ -41,20 +43,20 @@ class FloatingService : CompositionFbService({
 
         // https://github.com/gkd-kit/gkd/issues/62
         // https://github.com/gkd-kit/gkd/issues/61
-        val defaultFingerData = Tuple3(0L, 0f, 0f)
+        val defaultFingerData = Triple(0L, 0f, 0f)
         var fingerDownData = defaultFingerData
         val maxDistanceOffset = 50
         builder.addFloatingBubbleListener(object : FloatingBubbleListener {
             override fun onFingerDown(x: Float, y: Float) {
-                fingerDownData = Tuple3(System.currentTimeMillis(), x, y)
+                fingerDownData = Triple(System.currentTimeMillis(), x, y)
             }
 
             override fun onFingerMove(x: Float, y: Float) {
                 if (fingerDownData === defaultFingerData) {
                     return
                 }
-                val dx = fingerDownData.t1 - x
-                val dy = fingerDownData.t2 - y
+                val dx = fingerDownData.second - x
+                val dy = fingerDownData.third - y
                 val distance = sqrt(dx * dx + dy * dy)
                 if (distance > maxDistanceOffset) {
                     // reset
@@ -63,37 +65,37 @@ class FloatingService : CompositionFbService({
             }
 
             override fun onFingerUp(x: Float, y: Float) {
-                if (System.currentTimeMillis() - fingerDownData.t0 < ViewConfiguration.getTapTimeout()) {
+                if (System.currentTimeMillis() - fingerDownData.first < ViewConfiguration.getTapTimeout()) {
                     // is onClick
-                    appScope.launchTry(Dispatchers.IO) {
+                    appScope.launchTry {
                         SnapshotExt.captureSnapshot()
-                        ToastUtils.showShort("快照成功")
                     }
                 }
             }
         })
-        resolve(builder)
+        return builder
     }
 
-    isRunning.value = true
-    onDestroy {
-        isRunning.value = false
-    }
-}) {
-
-    override fun onCreate() {
-        super.onCreate()
-        minimize()
-    }
 
     override fun startNotificationForeground() {
-        createNotif(this, floatingChannel.id, floatingNotif)
+        floatingNotif.notifyService(this)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isRunning.value = false
     }
 
     companion object {
         val isRunning = MutableStateFlow(false)
-        fun stop(context: Context = app) {
-            context.stopService(Intent(context, FloatingService::class.java))
+
+        fun start() {
+            if (!notificationState.checkOrToast()) return
+            if (!canDrawOverlaysState.checkOrToast()) return
+            app.startForegroundService(Intent(app, FloatingService::class.java))
+        }
+        fun stop() {
+            app.stopService(Intent(app, FloatingService::class.java))
         }
     }
 }

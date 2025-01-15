@@ -1,6 +1,7 @@
 package li.songe.gkd.data
 
-import kotlinx.parcelize.IgnoredOnParcel
+import android.graphics.Rect
+import com.blankj.utilcode.util.LogUtils
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -11,10 +12,16 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import li.songe.gkd.service.checkSelector
 import li.songe.gkd.util.json
-import li.songe.gkd.util.json5ToJson
+import li.songe.gkd.util.toast
+import li.songe.json5.Json5
 import li.songe.selector.Selector
+import net.objecthunter.exp4j.Expression
+import net.objecthunter.exp4j.ExpressionBuilder
+
 
 @Serializable
 data class RawSubscription(
@@ -29,8 +36,19 @@ data class RawSubscription(
     val categories: List<RawCategory> = emptyList(),
     val apps: List<RawApp> = emptyList(),
 ) {
+    // 重写 equals 和 hashCode 便于 compose 重组比较
+    override fun equals(other: Any?): Boolean {
+        return other === this
+    }
 
-    @IgnoredOnParcel
+    override fun hashCode(): Int {
+        var result = super.hashCode()
+        result = 31 * result + id.hashCode()
+        result = 31 * result + name.hashCode()
+        result = 31 * result + version
+        return result
+    }
+
     val categoryToGroupsMap by lazy {
         val allAppGroups = apps.flatMap { a -> a.groups.map { g -> g to a } }
         allAppGroups.groupBy { g ->
@@ -38,7 +56,23 @@ data class RawSubscription(
         }
     }
 
-    @IgnoredOnParcel
+    val categoryToAppMap by lazy {
+        val map = mutableMapOf<RawCategory, MutableList<RawApp>>()
+        categories.forEach { c ->
+            apps.forEach { a ->
+                if (a.groups.any { g -> g.name.startsWith(c.name) }) {
+                    val list = map[c]
+                    if (list == null) {
+                        map[c] = mutableListOf(a)
+                    } else {
+                        list.add(a)
+                    }
+                }
+            }
+        }
+        map
+    }
+
     val groupToCategoryMap by lazy {
         val map = mutableMapOf<RawAppGroup, RawCategory>()
         categoryToGroupsMap.forEach { (key, value) ->
@@ -51,12 +85,14 @@ data class RawSubscription(
         map
     }
 
-    @IgnoredOnParcel
     val appGroups by lazy {
         apps.flatMap { a -> a.groups }
     }
 
-    @IgnoredOnParcel
+    val groupsSize by lazy {
+        appGroups.size + globalGroups.size
+    }
+
     val numText by lazy {
         val appsSize = apps.size
         val appGroupsSize = appGroups.size
@@ -80,6 +116,7 @@ data class RawSubscription(
         }
     }
 
+
     @Serializable
     data class RawApp(
         val id: String,
@@ -87,48 +124,128 @@ data class RawSubscription(
         val groups: List<RawAppGroup> = emptyList(),
     )
 
+
     @Serializable
     data class RawCategory(val key: Int, val name: String, val enable: Boolean?)
 
 
-    interface RawCommonProps {
+    @Serializable
+    data class Position(
+        val left: String?, val top: String?, val right: String?, val bottom: String?
+    ) {
+        private val leftExp by lazy { getExpression(left) }
+        private val topExp by lazy { getExpression(top) }
+        private val rightExp by lazy { getExpression(right) }
+        private val bottomExp by lazy { getExpression(bottom) }
+
+        val isValid by lazy {
+            ((leftExp != null && (topExp != null || bottomExp != null)) || (rightExp != null && (topExp != null || bottomExp != null)))
+        }
+
+        /**
+         * return (x, y)
+         */
+        fun calc(rect: Rect): Pair<Float, Float>? {
+            if (!isValid) return null
+            arrayOf(
+                leftExp, topExp, rightExp, bottomExp
+            ).forEach { exp ->
+                if (exp != null) {
+                    setVariables(exp, rect)
+                }
+            }
+            try {
+                if (leftExp != null) {
+                    if (topExp != null) {
+                        return (rect.left + leftExp!!.evaluate()
+                            .toFloat()) to (rect.top + topExp!!.evaluate().toFloat())
+                    }
+                    if (bottomExp != null) {
+                        return (rect.left + leftExp!!.evaluate()
+                            .toFloat()) to (rect.bottom - bottomExp!!.evaluate().toFloat())
+                    }
+                } else if (rightExp != null) {
+                    if (topExp != null) {
+                        return (rect.right - rightExp!!.evaluate()
+                            .toFloat()) to (rect.top + topExp!!.evaluate().toFloat())
+                    }
+                    if (bottomExp != null) {
+                        return (rect.right - rightExp!!.evaluate()
+                            .toFloat()) to (rect.bottom - bottomExp!!.evaluate().toFloat())
+                    }
+                }
+            } catch (e: Exception) {
+                // 可能存在 1/0 导致错误
+                e.printStackTrace()
+                LogUtils.d(e)
+                toast(e.message ?: e.stackTraceToString())
+            }
+            return null
+        }
+    }
+
+
+    sealed interface RawCommonProps {
         val actionCd: Long?
         val actionDelay: Long?
         val quickFind: Boolean?
+        val fastQuery: Boolean?
+        val matchRoot: Boolean?
         val matchDelay: Long?
         val matchTime: Long?
         val actionMaximum: Int?
         val resetMatch: String?
         val actionCdKey: Int?
         val actionMaximumKey: Int?
+        val order: Int?
+        val forcedTime: Long?
         val snapshotUrls: List<String>?
+        val excludeSnapshotUrls: List<String>?
         val exampleUrls: List<String>?
+        val priorityTime: Long?
+        val priorityActionMaximum: Int?
     }
 
-    interface RawRuleProps : RawCommonProps {
+    sealed interface RawRuleProps : RawCommonProps {
         val name: String?
         val key: Int?
         val preKeys: List<Int>?
         val action: String?
-        val matches: List<String>
+        val position: Position?
+        val matches: List<String>?
         val excludeMatches: List<String>?
+        val anyMatches: List<String>?
     }
 
-    interface RawGroupProps : RawCommonProps {
+
+    sealed interface RawGroupProps : RawCommonProps {
         val name: String
         val key: Int
         val desc: String?
         val enable: Boolean?
+        val scopeKeys: List<Int>?
         val rules: List<RawRuleProps>
+
+        val valid: Boolean
+        val errorDesc: String?
+        val allExampleUrls: List<String>
+        val cacheMap: MutableMap<String, Selector?>
     }
 
-    interface RawAppRuleProps {
+    sealed interface RawAppRuleProps {
         val activityIds: List<String>?
         val excludeActivityIds: List<String>?
+
+        val versionNames: List<String>?
+        val excludeVersionNames: List<String>?
+        val versionCodes: List<Long>?
+        val excludeVersionCodes: List<Long>?
     }
 
-    interface RawGlobalRuleProps {
+    sealed interface RawGlobalRuleProps {
         val matchAnyApp: Boolean?
+        val matchSystemApp: Boolean?
+        val matchLauncher: Boolean?
         val apps: List<RawGlobalApp>?
     }
 
@@ -139,6 +256,10 @@ data class RawSubscription(
         val enable: Boolean?,
         override val activityIds: List<String>?,
         override val excludeActivityIds: List<String>?,
+        override val versionNames: List<String>?,
+        override val excludeVersionNames: List<String>?,
+        override val versionCodes: List<Long>?,
+        override val excludeVersionCodes: List<Long>?,
     ) : RawAppRuleProps
 
 
@@ -148,69 +269,77 @@ data class RawSubscription(
         override val key: Int,
         override val desc: String?,
         override val enable: Boolean?,
+        override val scopeKeys: List<Int>?,
         override val actionCd: Long?,
         override val actionDelay: Long?,
         override val quickFind: Boolean?,
+        override val fastQuery: Boolean?,
+        override val matchRoot: Boolean?,
         override val matchDelay: Long?,
         override val matchTime: Long?,
         override val actionMaximum: Int?,
         override val resetMatch: String?,
         override val actionCdKey: Int?,
         override val actionMaximumKey: Int?,
+        override val priorityTime: Long?,
+        override val priorityActionMaximum: Int?,
+        override val order: Int?,
+        override val forcedTime: Long?,
         override val snapshotUrls: List<String>?,
+        override val excludeSnapshotUrls: List<String>?,
         override val exampleUrls: List<String>?,
         override val matchAnyApp: Boolean?,
+        override val matchSystemApp: Boolean?,
+        override val matchLauncher: Boolean?,
         override val apps: List<RawGlobalApp>?,
         override val rules: List<RawGlobalRule>,
     ) : RawGroupProps, RawGlobalRuleProps {
-
-        @IgnoredOnParcel
-        val valid by lazy {
-            rules.all { r ->
-                r.matches.all { s -> Selector.check(s) } && (r.excludeMatches
-                    ?: emptyList()).all { s ->
-                    Selector.check(
-                        s
-                    )
-                }
-            }
+        val appIdEnable by lazy {
+            (apps ?: emptyList()).associate { a -> a.id to (a.enable ?: true) }
         }
 
-        @IgnoredOnParcel
-        val allExampleUrls by lazy {
-            mutableListOf<String>().apply {
-                if (exampleUrls != null) {
-                    addAll(exampleUrls)
-                }
-                rules.forEach { r ->
-                    if (r.exampleUrls != null) {
-                        addAll(r.exampleUrls)
-                    }
-                }
-            }
+        override val cacheMap by lazy { HashMap<String, Selector?>() }
+        override val errorDesc by lazy { getErrorDesc() }
+        override val valid by lazy { errorDesc == null }
+        override val allExampleUrls by lazy {
+            ((exampleUrls ?: emptyList()) + rules.flatMap { r ->
+                r.exampleUrls ?: emptyList()
+            }).distinct()
         }
     }
+
 
     @Serializable
     data class RawGlobalRule(
         override val actionCd: Long?,
         override val actionDelay: Long?,
         override val quickFind: Boolean?,
+        override val fastQuery: Boolean?,
+        override val matchRoot: Boolean?,
         override val matchDelay: Long?,
         override val matchTime: Long?,
         override val actionMaximum: Int?,
         override val resetMatch: String?,
         override val actionCdKey: Int?,
         override val actionMaximumKey: Int?,
+        override val priorityTime: Long?,
+        override val priorityActionMaximum: Int?,
+        override val order: Int?,
+        override val forcedTime: Long?,
         override val snapshotUrls: List<String>?,
+        override val excludeSnapshotUrls: List<String>?,
         override val exampleUrls: List<String>?,
         override val name: String?,
         override val key: Int?,
         override val preKeys: List<Int>?,
         override val action: String?,
-        override val matches: List<String>,
+        override val position: Position?,
+        override val matches: List<String>?,
         override val excludeMatches: List<String>?,
+        override val anyMatches: List<String>?,
         override val matchAnyApp: Boolean?,
+        override val matchSystemApp: Boolean?,
+        override val matchLauncher: Boolean?,
         override val apps: List<RawGlobalApp>?
     ) : RawRuleProps, RawGlobalRuleProps
 
@@ -220,46 +349,40 @@ data class RawSubscription(
         override val key: Int,
         override val desc: String?,
         override val enable: Boolean?,
+        override val scopeKeys: List<Int>?,
         override val actionCdKey: Int?,
         override val actionMaximumKey: Int?,
         override val actionCd: Long?,
         override val actionDelay: Long?,
         override val quickFind: Boolean?,
+        override val fastQuery: Boolean?,
+        override val matchRoot: Boolean?,
         override val actionMaximum: Int?,
+        override val priorityTime: Long?,
+        override val priorityActionMaximum: Int?,
+        override val order: Int?,
+        override val forcedTime: Long?,
         override val matchDelay: Long?,
         override val matchTime: Long?,
         override val resetMatch: String?,
         override val snapshotUrls: List<String>?,
+        override val excludeSnapshotUrls: List<String>?,
         override val exampleUrls: List<String>?,
         override val activityIds: List<String>?,
         override val excludeActivityIds: List<String>?,
         override val rules: List<RawAppRule>,
+        override val versionNames: List<String>?,
+        override val excludeVersionNames: List<String>?,
+        override val versionCodes: List<Long>?,
+        override val excludeVersionCodes: List<Long>?,
     ) : RawGroupProps, RawAppRuleProps {
-
-        @IgnoredOnParcel
-        val valid by lazy {
-            rules.all { r ->
-                r.matches.all { s -> Selector.check(s) } && (r.excludeMatches
-                    ?: emptyList()).all { s ->
-                    Selector.check(
-                        s
-                    )
-                }
-            }
-        }
-
-        @IgnoredOnParcel
-        val allExampleUrls by lazy {
-            mutableListOf<String>().apply {
-                if (exampleUrls != null) {
-                    addAll(exampleUrls)
-                }
-                rules.forEach { r ->
-                    if (r.exampleUrls != null) {
-                        addAll(r.exampleUrls)
-                    }
-                }
-            }
+        override val cacheMap by lazy { HashMap<String, Selector?>() }
+        override val errorDesc by lazy { getErrorDesc() }
+        override val valid by lazy { errorDesc == null }
+        override val allExampleUrls by lazy {
+            ((exampleUrls ?: emptyList()) + rules.flatMap { r ->
+                r.exampleUrls ?: emptyList()
+            }).distinct()
         }
     }
 
@@ -269,29 +392,138 @@ data class RawSubscription(
         override val key: Int?,
         override val preKeys: List<Int>?,
         override val action: String?,
-        override val matches: List<String>,
+        override val position: Position?,
+        override val matches: List<String>?,
         override val excludeMatches: List<String>?,
+        override val anyMatches: List<String>?,
 
         override val actionCdKey: Int?,
         override val actionMaximumKey: Int?,
         override val actionCd: Long?,
         override val actionDelay: Long?,
         override val quickFind: Boolean?,
+        override val fastQuery: Boolean?,
+        override val matchRoot: Boolean?,
         override val actionMaximum: Int?,
+        override val priorityTime: Long?,
+        override val priorityActionMaximum: Int?,
+        override val order: Int?,
+        override val forcedTime: Long?,
         override val matchDelay: Long?,
         override val matchTime: Long?,
         override val resetMatch: String?,
         override val snapshotUrls: List<String>?,
+        override val excludeSnapshotUrls: List<String>?,
         override val exampleUrls: List<String>?,
 
         override val activityIds: List<String>?,
         override val excludeActivityIds: List<String>?,
+
+        override val versionNames: List<String>?,
+        override val excludeVersionNames: List<String>?,
+        override val versionCodes: List<Long>?,
+        override val excludeVersionCodes: List<Long>?,
     ) : RawRuleProps, RawAppRuleProps
 
     companion object {
 
-        private fun getStringIArray(json: JsonObject? = null, name: String): List<String>? {
-            return when (val element = json?.get(name)) {
+        private fun RawGroupProps.getErrorDesc(): String? {
+            val allSelectorStrings = rules.map { r ->
+                listOfNotNull(r.matches, r.excludeMatches, r.anyMatches).flatten()
+            }.flatten()
+
+            val allSelector = allSelectorStrings.map { s ->
+                try {
+                    Selector.parse(s).apply {
+                        cacheMap[s] = this
+                    }
+                } catch (e: Exception) {
+                    LogUtils.d("非法选择器", e.toString())
+                    cacheMap[s] = null
+                    null
+                }
+            }
+
+            allSelector.forEachIndexed { i, s ->
+                if (s == null) {
+                    return "非法选择器:${allSelectorStrings[i]}"
+                }
+            }
+            allSelector.forEach { s ->
+                s?.checkSelector()?.let { return it }
+            }
+            rules.forEach { r ->
+                if (r.position?.isValid == false) {
+                    return "非法位置:${r.position}"
+                }
+            }
+            return null
+        }
+
+        private val expVars = arrayOf(
+            "left",
+            "top",
+            "right",
+            "bottom",
+            "width",
+            "height",
+            "random"
+        )
+
+        private fun setVariables(exp: Expression, rect: Rect) {
+            exp.setVariable("left", rect.left.toDouble())
+            exp.setVariable("top", rect.top.toDouble())
+            exp.setVariable("right", rect.right.toDouble())
+            exp.setVariable("bottom", rect.bottom.toDouble())
+            exp.setVariable("width", rect.width().toDouble())
+            exp.setVariable("height", rect.height().toDouble())
+            exp.setVariable("random", Math.random())
+        }
+
+        private fun getExpression(value: String?): Expression? {
+            return if (value != null) {
+                try {
+                    ExpressionBuilder(value).variables(*expVars).build().apply {
+                        expVars.forEach { v ->
+                            // 预填充作 validate
+                            setVariable(v, 0.0)
+                        }
+                    }.let { e ->
+                        if (e.validate().isValid) {
+                            e
+                        } else {
+                            null
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    null
+                }
+            } else {
+                null
+            }
+        }
+
+        private fun getPosition(jsonObject: JsonObject? = null): Position? {
+            return when (val element = jsonObject?.get("position")) {
+                JsonNull, null -> null
+                is JsonObject -> {
+                    Position(
+                        left = element["left"]?.jsonPrimitive?.content,
+                        bottom = element["bottom"]?.jsonPrimitive?.content,
+                        top = element["top"]?.jsonPrimitive?.content,
+                        right = element["right"]?.jsonPrimitive?.content,
+                    )
+                }
+
+                else -> null
+            }
+        }
+
+        private fun getStringIArray(
+            jsonObject: JsonObject? = null, name: String
+        ): List<String>? {
+            return when (val element = jsonObject?.get(name)) {
                 JsonNull, null -> null
                 is JsonObject -> error("Element ${this::class} can not be object")
                 is JsonArray -> element.map {
@@ -305,9 +537,8 @@ data class RawSubscription(
             }
         }
 
-        @Suppress("SameParameterValue")
-        private fun getIntIArray(json: JsonObject? = null, name: String): List<Int>? {
-            return when (val element = json?.get(name)) {
+        private fun getIntIArray(jsonObject: JsonObject? = null, name: String): List<Int>? {
+            return when (val element = jsonObject?.get(name)) {
                 JsonNull, null -> null
                 is JsonArray -> element.map {
                     when (it) {
@@ -321,8 +552,23 @@ data class RawSubscription(
             }
         }
 
-        private fun getString(json: JsonObject? = null, key: String): String? =
-            when (val p = json?.get(key)) {
+        private fun getLongIArray(jsonObject: JsonObject? = null, name: String): List<Long>? {
+            return when (val element = jsonObject?.get(name)) {
+                JsonNull, null -> null
+                is JsonArray -> element.map {
+                    when (it) {
+                        is JsonObject, is JsonArray, JsonNull -> error("Element $it is not a int")
+                        is JsonPrimitive -> it.long
+                    }
+                }
+
+                is JsonPrimitive -> listOf(element.long)
+                else -> error("Element $element is not a Array")
+            }
+        }
+
+        private fun getString(jsonObject: JsonObject? = null, key: String): String? =
+            when (val p = jsonObject?.get(key)) {
                 JsonNull, null -> null
                 is JsonPrimitive -> {
                     if (p.isString) {
@@ -335,8 +581,8 @@ data class RawSubscription(
                 else -> error("Element $p is not a string")
             }
 
-        private fun getLong(json: JsonObject? = null, key: String): Long? =
-            when (val p = json?.get(key)) {
+        private fun getLong(jsonObject: JsonObject? = null, key: String): Long? =
+            when (val p = jsonObject?.get(key)) {
                 JsonNull, null -> null
                 is JsonPrimitive -> {
                     p.long
@@ -345,8 +591,8 @@ data class RawSubscription(
                 else -> error("Element $p is not a long")
             }
 
-        private fun getInt(json: JsonObject? = null, key: String): Int? =
-            when (val p = json?.get(key)) {
+        private fun getInt(jsonObject: JsonObject? = null, key: String): Int? =
+            when (val p = jsonObject?.get(key)) {
                 JsonNull, null -> null
                 is JsonPrimitive -> {
                     p.int
@@ -355,9 +601,8 @@ data class RawSubscription(
                 else -> error("Element $p is not a int")
             }
 
-        @Suppress("SameParameterValue")
-        private fun getBoolean(json: JsonObject? = null, key: String): Boolean? =
-            when (val p = json?.get(key)) {
+        private fun getBoolean(jsonObject: JsonObject? = null, key: String): Boolean? =
+            when (val p = jsonObject?.get(key)) {
                 JsonNull, null -> null
                 is JsonPrimitive -> {
                     p.boolean
@@ -367,76 +612,99 @@ data class RawSubscription(
             }
 
         private fun jsonToRuleRaw(rulesRawJson: JsonElement): RawAppRule {
-            val rulesJson = when (rulesRawJson) {
+            val jsonObject = when (rulesRawJson) {
                 JsonNull -> error("miss current rule")
                 is JsonObject -> rulesRawJson
                 is JsonPrimitive, is JsonArray -> JsonObject(mapOf("matches" to rulesRawJson))
             }
             return RawAppRule(
-                activityIds = getStringIArray(rulesJson, "activityIds"),
-                excludeActivityIds = getStringIArray(rulesJson, "excludeActivityIds"),
-                matches = (getStringIArray(
-                    rulesJson, "matches"
-                ) ?: emptyList()),
-                excludeMatches = getStringIArray(rulesJson, "excludeMatches"),
-                key = getInt(rulesJson, "key"),
-                name = getString(rulesJson, "name"),
-                actionCd = getLong(rulesJson, "actionCd") ?: getLong(rulesJson, "cd"),
-                actionDelay = getLong(rulesJson, "actionDelay") ?: getLong(rulesJson, "delay"),
-                preKeys = getIntIArray(rulesJson, "preKeys"),
-                action = getString(rulesJson, "action"),
-                quickFind = getBoolean(rulesJson, "quickFind"),
-                actionMaximum = getInt(rulesJson, "actionMaximum"),
-                matchDelay = getLong(rulesJson, "matchDelay"),
-                matchTime = getLong(rulesJson, "matchTime"),
-                resetMatch = getString(rulesJson, "resetMatch"),
-                snapshotUrls = getStringIArray(rulesJson, "snapshotUrls"),
-                exampleUrls = getStringIArray(rulesJson, "exampleUrls"),
-                actionMaximumKey = getInt(rulesJson, "actionMaximumKey"),
-                actionCdKey = getInt(rulesJson, "actionCdKey"),
+                activityIds = getStringIArray(jsonObject, "activityIds"),
+                excludeActivityIds = getStringIArray(jsonObject, "excludeActivityIds"),
+                matches = getStringIArray(jsonObject, "matches"),
+                excludeMatches = getStringIArray(jsonObject, "excludeMatches"),
+                anyMatches = getStringIArray(jsonObject, "anyMatches"),
+                key = getInt(jsonObject, "key"),
+                name = getString(jsonObject, "name"),
+                actionCd = getLong(jsonObject, "actionCd") ?: getLong(jsonObject, "cd"),
+                actionDelay = getLong(jsonObject, "actionDelay") ?: getLong(jsonObject, "delay"),
+                preKeys = getIntIArray(jsonObject, "preKeys"),
+                action = getString(jsonObject, "action"),
+                quickFind = getBoolean(jsonObject, "quickFind"),
+                fastQuery = getBoolean(jsonObject, "fastQuery"),
+                matchRoot = getBoolean(jsonObject, "matchRoot"),
+                actionMaximum = getInt(jsonObject, "actionMaximum"),
+                matchDelay = getLong(jsonObject, "matchDelay"),
+                matchTime = getLong(jsonObject, "matchTime"),
+                resetMatch = getString(jsonObject, "resetMatch"),
+                snapshotUrls = getStringIArray(jsonObject, "snapshotUrls"),
+                excludeSnapshotUrls = getStringIArray(jsonObject, "excludeSnapshotUrls"),
+                exampleUrls = getStringIArray(jsonObject, "exampleUrls"),
+                actionMaximumKey = getInt(jsonObject, "actionMaximumKey"),
+                actionCdKey = getInt(jsonObject, "actionCdKey"),
+                order = getInt(jsonObject, "order"),
+                versionCodes = getLongIArray(jsonObject, "versionCodes"),
+                excludeVersionCodes = getLongIArray(jsonObject, "excludeVersionCodes"),
+                versionNames = getStringIArray(jsonObject, "versionNames"),
+                excludeVersionNames = getStringIArray(jsonObject, "excludeVersionNames"),
+                position = getPosition(jsonObject),
+                forcedTime = getLong(jsonObject, "forcedTime"),
+                priorityTime = getLong(jsonObject, "priorityTime"),
+                priorityActionMaximum = getInt(jsonObject, "priorityActionMaximum"),
             )
         }
 
 
         private fun jsonToGroupRaw(groupRawJson: JsonElement, groupIndex: Int): RawAppGroup {
-            val groupJson = when (groupRawJson) {
+            val jsonObject = when (groupRawJson) {
                 JsonNull -> error("group must not be null")
                 is JsonObject -> groupRawJson
                 is JsonPrimitive, is JsonArray -> JsonObject(mapOf("rules" to groupRawJson))
             }
             return RawAppGroup(
-                activityIds = getStringIArray(groupJson, "activityIds"),
-                excludeActivityIds = getStringIArray(groupJson, "excludeActivityIds"),
-                actionCd = getLong(groupJson, "actionCd") ?: getLong(groupJson, "cd"),
-                actionDelay = getLong(groupJson, "actionDelay") ?: getLong(groupJson, "delay"),
-                name = getString(groupJson, "name") ?: error("miss group name"),
-                desc = getString(groupJson, "desc"),
-                enable = getBoolean(groupJson, "enable"),
-                key = getInt(groupJson, "key") ?: groupIndex,
-                rules = when (val rulesJson = groupJson["rules"]) {
+                activityIds = getStringIArray(jsonObject, "activityIds"),
+                excludeActivityIds = getStringIArray(jsonObject, "excludeActivityIds"),
+                actionCd = getLong(jsonObject, "actionCd") ?: getLong(jsonObject, "cd"),
+                actionDelay = getLong(jsonObject, "actionDelay") ?: getLong(jsonObject, "delay"),
+                name = getString(jsonObject, "name") ?: error("miss group name"),
+                desc = getString(jsonObject, "desc"),
+                enable = getBoolean(jsonObject, "enable"),
+                key = getInt(jsonObject, "key") ?: groupIndex,
+                rules = when (val rulesJson = jsonObject["rules"]) {
                     null, JsonNull -> emptyList()
                     is JsonPrimitive, is JsonObject -> JsonArray(listOf(rulesJson))
                     is JsonArray -> rulesJson
                 }.map {
                     jsonToRuleRaw(it)
                 },
-                quickFind = getBoolean(groupJson, "quickFind"),
-                actionMaximum = getInt(groupJson, "actionMaximum"),
-                matchDelay = getLong(groupJson, "matchDelay"),
-                matchTime = getLong(groupJson, "matchTime"),
-                resetMatch = getString(groupJson, "resetMatch"),
-                snapshotUrls = getStringIArray(groupJson, "snapshotUrls"),
-                exampleUrls = getStringIArray(groupJson, "exampleUrls"),
-                actionMaximumKey = getInt(groupJson, "actionMaximumKey"),
-                actionCdKey = getInt(groupJson, "actionCdKey"),
+                quickFind = getBoolean(jsonObject, "quickFind"),
+                fastQuery = getBoolean(jsonObject, "fastQuery"),
+                matchRoot = getBoolean(jsonObject, "matchRoot"),
+                actionMaximum = getInt(jsonObject, "actionMaximum"),
+                matchDelay = getLong(jsonObject, "matchDelay"),
+                matchTime = getLong(jsonObject, "matchTime"),
+                resetMatch = getString(jsonObject, "resetMatch"),
+                snapshotUrls = getStringIArray(jsonObject, "snapshotUrls"),
+                excludeSnapshotUrls = getStringIArray(jsonObject, "excludeSnapshotUrls"),
+                exampleUrls = getStringIArray(jsonObject, "exampleUrls"),
+                actionMaximumKey = getInt(jsonObject, "actionMaximumKey"),
+                actionCdKey = getInt(jsonObject, "actionCdKey"),
+                order = getInt(jsonObject, "order"),
+                forcedTime = getLong(jsonObject, "forcedTime"),
+                scopeKeys = getIntIArray(jsonObject, "scopeKeys"),
+                versionCodes = getLongIArray(jsonObject, "versionCodes"),
+                excludeVersionCodes = getLongIArray(jsonObject, "excludeVersionCodes"),
+                versionNames = getStringIArray(jsonObject, "versionNames"),
+                excludeVersionNames = getStringIArray(jsonObject, "excludeVersionNames"),
+                priorityTime = getLong(jsonObject, "priorityTime"),
+                priorityActionMaximum = getInt(jsonObject, "priorityActionMaximum"),
             )
         }
 
-        private fun jsonToAppRaw(appsJson: JsonObject, appIndex: Int): RawApp {
+        private fun jsonToAppRaw(jsonObject: JsonObject, appIndex: Int): RawApp {
             return RawApp(
-                id = getString(appsJson, "id") ?: error("miss subscription.apps[$appIndex].id"),
-                name = getString(appsJson, "name"),
-                groups = (when (val groupsJson = appsJson["groups"]) {
+                id = getString(jsonObject, "id") ?: error("miss subscription.apps[$appIndex].id"),
+                name = getString(jsonObject, "name"),
+                groups = (when (val groupsJson = jsonObject["groups"]) {
                     null, JsonNull -> emptyList()
                     is JsonPrimitive, is JsonObject -> JsonArray(listOf(groupsJson))
                     is JsonArray -> groupsJson
@@ -453,6 +721,10 @@ data class RawSubscription(
                 enable = getBoolean(jsonObject, "enable"),
                 activityIds = getStringIArray(jsonObject, "activityIds"),
                 excludeActivityIds = getStringIArray(jsonObject, "excludeActivityIds"),
+                versionCodes = getLongIArray(jsonObject, "versionCodes"),
+                excludeVersionCodes = getLongIArray(jsonObject, "excludeVersionCodes"),
+                versionNames = getStringIArray(jsonObject, "versionNames"),
+                excludeVersionNames = getStringIArray(jsonObject, "excludeVersionNames"),
             )
         }
 
@@ -463,15 +735,20 @@ data class RawSubscription(
                 actionCd = getLong(jsonObject, "actionCd"),
                 actionDelay = getLong(jsonObject, "actionDelay"),
                 quickFind = getBoolean(jsonObject, "quickFind"),
+                fastQuery = getBoolean(jsonObject, "fastQuery"),
+                matchRoot = getBoolean(jsonObject, "matchRoot"),
                 actionMaximum = getInt(jsonObject, "actionMaximum"),
                 matchDelay = getLong(jsonObject, "matchDelay"),
                 matchTime = getLong(jsonObject, "matchTime"),
                 resetMatch = getString(jsonObject, "resetMatch"),
                 snapshotUrls = getStringIArray(jsonObject, "snapshotUrls"),
+                excludeSnapshotUrls = getStringIArray(jsonObject, "excludeSnapshotUrls"),
                 exampleUrls = getStringIArray(jsonObject, "exampleUrls"),
                 actionMaximumKey = getInt(jsonObject, "actionMaximumKey"),
                 actionCdKey = getInt(jsonObject, "actionCdKey"),
                 matchAnyApp = getBoolean(jsonObject, "matchAnyApp"),
+                matchSystemApp = getBoolean(jsonObject, "matchSystemApp"),
+                matchLauncher = getBoolean(jsonObject, "matchLauncher"),
                 apps = jsonObject["apps"]?.jsonArray?.mapIndexed { index, jsonElement ->
                     jsonToGlobalApp(
                         jsonElement.jsonObject, index
@@ -480,36 +757,52 @@ data class RawSubscription(
                 action = getString(jsonObject, "action"),
                 preKeys = getIntIArray(jsonObject, "preKeys"),
                 excludeMatches = getStringIArray(jsonObject, "excludeMatches"),
-                matches = getStringIArray(jsonObject, "matches") ?: error("miss matches"),
+                matches = getStringIArray(jsonObject, "matches"),
+                anyMatches = getStringIArray(jsonObject, "anyMatches"),
+                order = getInt(jsonObject, "order"),
+                forcedTime = getLong(jsonObject, "forcedTime"),
+                position = getPosition(jsonObject),
+                priorityTime = getLong(jsonObject, "priorityTime"),
+                priorityActionMaximum = getInt(jsonObject, "priorityActionMaximum"),
             )
         }
 
         private fun jsonToGlobalGroups(jsonObject: JsonObject, groupIndex: Int): RawGlobalGroup {
-            return RawGlobalGroup(key = getInt(jsonObject, "key")
-                ?: error("miss group[$groupIndex].key"),
+            return RawGlobalGroup(
+                key = getInt(jsonObject, "key") ?: error("miss group[$groupIndex].key"),
                 name = getString(jsonObject, "name") ?: error("miss group[$groupIndex].name"),
                 desc = getString(jsonObject, "desc"),
                 enable = getBoolean(jsonObject, "enable"),
                 actionCd = getLong(jsonObject, "actionCd"),
                 actionDelay = getLong(jsonObject, "actionDelay"),
                 quickFind = getBoolean(jsonObject, "quickFind"),
+                fastQuery = getBoolean(jsonObject, "fastQuery"),
+                matchRoot = getBoolean(jsonObject, "matchRoot"),
                 actionMaximum = getInt(jsonObject, "actionMaximum"),
                 matchDelay = getLong(jsonObject, "matchDelay"),
                 matchTime = getLong(jsonObject, "matchTime"),
                 resetMatch = getString(jsonObject, "resetMatch"),
                 snapshotUrls = getStringIArray(jsonObject, "snapshotUrls"),
+                excludeSnapshotUrls = getStringIArray(jsonObject, "excludeSnapshotUrls"),
                 exampleUrls = getStringIArray(jsonObject, "exampleUrls"),
                 actionMaximumKey = getInt(jsonObject, "actionMaximumKey"),
                 actionCdKey = getInt(jsonObject, "actionCdKey"),
+                matchSystemApp = getBoolean(jsonObject, "matchSystemApp"),
                 matchAnyApp = getBoolean(jsonObject, "matchAnyApp"),
+                matchLauncher = getBoolean(jsonObject, "matchLauncher"),
                 apps = jsonObject["apps"]?.jsonArray?.mapIndexed { index, jsonElement ->
                     jsonToGlobalApp(
                         jsonElement.jsonObject, index
                     )
-                },
+                } ?: emptyList(),
                 rules = jsonObject["rules"]?.jsonArray?.map { jsonElement ->
                     jsonToGlobalRule(jsonElement.jsonObject)
-                } ?: emptyList()
+                } ?: emptyList(),
+                order = getInt(jsonObject, "order"),
+                scopeKeys = getIntIArray(jsonObject, "scopeKeys"),
+                forcedTime = getLong(jsonObject, "forcedTime"),
+                priorityTime = getLong(jsonObject, "priorityTime"),
+                priorityActionMaximum = getInt(jsonObject, "priorityActionMaximum"),
             )
         }
 
@@ -521,12 +814,12 @@ data class RawSubscription(
                 updateUrl = getString(rootJson, "updateUrl"),
                 supportUri = getString(rootJson, "supportUri"),
                 checkUpdateUrl = getString(rootJson, "checkUpdateUrl"),
-                apps = rootJson["apps"]?.jsonArray?.mapIndexed { index, jsonElement ->
+                apps = (rootJson["apps"]?.jsonArray?.mapIndexed { index, jsonElement ->
                     jsonToAppRaw(
                         jsonElement.jsonObject, index
                     )
-                } ?: emptyList(),
-                categories = rootJson["categories"]?.jsonArray?.mapIndexed { index, jsonElement ->
+                } ?: emptyList()),
+                categories = (rootJson["categories"]?.jsonArray?.mapIndexed { index, jsonElement ->
                     RawCategory(
                         key = getInt(jsonElement.jsonObject, "key")
                             ?: error("miss categories[$index].key"),
@@ -534,11 +827,10 @@ data class RawSubscription(
                             ?: error("miss categories[$index].name"),
                         enable = getBoolean(jsonElement.jsonObject, "enable"),
                     )
-                } ?: emptyList(),
-                globalGroups = rootJson["globalGroups"]?.jsonArray?.mapIndexed { index, jsonElement ->
+                } ?: emptyList()),
+                globalGroups = (rootJson["globalGroups"]?.jsonArray?.mapIndexed { index, jsonElement ->
                     jsonToGlobalGroups(jsonElement.jsonObject, index)
-                } ?: emptyList()
-            )
+                } ?: emptyList()))
         }
 
         private fun <T> List<T>.findDuplicatedItem(predicate: (T) -> Any?): T? {
@@ -552,38 +844,38 @@ data class RawSubscription(
         }
 
         fun parse(source: String, json5: Boolean = true): RawSubscription {
-            val text = if (json5) json5ToJson(source) else source
-            val subscription = jsonToSubscriptionRaw(json.parseToJsonElement(text).jsonObject)
+            val element =
+                if (json5) Json5.parseToJson5Element(source) else json.parseToJsonElement(source)
+            val subscription = jsonToSubscriptionRaw(element.jsonObject)
             subscription.categories.findDuplicatedItem { v -> v.key }?.let { v ->
-                error("duplicated category: key=${v.key}")
+                error("id=${subscription.id}, duplicated category: key=${v.key}")
             }
             subscription.globalGroups.findDuplicatedItem { v -> v.key }?.let { v ->
-                error("duplicated global group: key=${v.key}")
+                error("id=${subscription.id}, duplicated global group: key=${v.key}")
             }
             subscription.globalGroups.forEach { g ->
                 g.rules.findDuplicatedItem { v -> v.key }?.let { v ->
-                    error("duplicated global rule: key=${v.key}, groupKey=${g.key}")
+                    error("id=${subscription.id}, duplicated global rule: key=${v.key}, groupKey=${g.key}")
                 }
             }
             subscription.apps.findDuplicatedItem { v -> v.id }?.let { v ->
-                error("duplicated app: ${v.id}")
+                error("id=${subscription.id}, duplicated app: ${v.id}")
             }
             subscription.apps.forEach { a ->
                 a.groups.findDuplicatedItem { v -> v.key }?.let { v ->
-                    error("duplicated app group: key=${v.key}, appId=${a.id}")
+                    error("id=${subscription.id}, duplicated app group: key=${v.key}, appId=${a.id}")
                 }
                 a.groups.forEach { g ->
                     g.rules.findDuplicatedItem { v -> v.key }?.let { v ->
-                        error("duplicated app rule: key=${v.key}, groupKey=${g.key}, appId=${a.id}")
+                        error("id=${subscription.id}, duplicated app rule: key=${v.key}, groupKey=${g.key}, appId=${a.id}")
                     }
                 }
             }
             return subscription
         }
 
-        fun parseRawApp(source: String, json5: Boolean = true): RawApp {
-            val text = if (json5) json5ToJson(source) else source
-            val a = jsonToAppRaw(json.parseToJsonElement(text).jsonObject, 0)
+        fun parseApp(jsonObject: JsonObject): RawApp {
+            val a = jsonToAppRaw(jsonObject, 0)
             a.groups.findDuplicatedItem { v -> v.key }?.let { v ->
                 error("duplicated app group: key=${v.key}")
             }
@@ -595,33 +887,28 @@ data class RawSubscription(
             return a
         }
 
-        fun parseRawGroup(source: String, json5: Boolean = true): RawAppGroup {
-            val text = if (json5) json5ToJson(source) else source
-            val g = jsonToGroupRaw(json.parseToJsonElement(text).jsonObject, 0)
+        fun parseRawApp(source: String): RawApp {
+            return parseApp(Json5.parseToJson5Element(source).jsonObject)
+        }
+
+        fun parseGroup(jsonObject: JsonObject): RawAppGroup {
+            val g = jsonToGroupRaw(jsonObject, 0)
             g.rules.findDuplicatedItem { v -> v.key }?.let { v ->
                 error("duplicated app rule: key=${v.key}")
             }
             return g
         }
 
-        fun parseRawGlobalGroup(source: String, json5: Boolean = true): RawGlobalGroup {
-            val text = if (json5) json5ToJson(source) else source
-            val g = jsonToGlobalGroups(json.parseToJsonElement(text).jsonObject, 0)
+        fun parseRawGroup(source: String): RawAppGroup {
+            return parseGroup(Json5.parseToJson5Element(source).jsonObject)
+        }
+
+        fun parseRawGlobalGroup(source: String): RawGlobalGroup {
+            val g = jsonToGlobalGroups(Json5.parseToJson5Element(source).jsonObject, 0)
             g.rules.findDuplicatedItem { v -> v.key }?.let { v ->
                 error("duplicated global rule: key=${v.key}")
             }
             return g
         }
     }
-
 }
-
-
-
-
-
-
-
-
-
-

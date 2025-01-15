@@ -1,69 +1,109 @@
 package li.songe.gkd.data
 
+import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.Job
-import li.songe.gkd.service.TopActivity
 import li.songe.gkd.service.lastTriggerRule
 import li.songe.gkd.service.lastTriggerTime
-import li.songe.gkd.service.querySelector
+import li.songe.selector.MatchOption
 import li.songe.selector.Selector
 
 sealed class ResolvedRule(
     val rule: RawSubscription.RawRuleProps,
-    val group: RawSubscription.RawGroupProps,
-    val rawSubs: RawSubscription,
-    val subsItem: SubsItem,
+    val g: ResolvedGroup,
 ) {
+    private val group = g.group
+    val subsItem = g.subsItem
+    val rawSubs = g.subscription
+    val config = g.config
     val key = rule.key
-    val index = group.rules.indexOf(rule)
-    val preKeys = (rule.preKeys ?: emptyList()).toSet()
-    val resetMatch = rule.resetMatch ?: group.resetMatch
-    val matches = rule.matches.map { s -> Selector.parse(s) }
-    val excludeMatches = (rule.excludeMatches ?: emptyList()).map { s -> Selector.parse(s) }
+    val index = group.rules.indexOfFirst { r -> r === rule }
+    val excludeData = g.excludeData
+    private val preKeys = (rule.preKeys ?: emptyList()).toSet()
+    val matches =
+        (rule.matches ?: emptyList()).map { s -> group.cacheMap[s] ?: Selector.parse(s) }
+    val excludeMatches =
+        (rule.excludeMatches ?: emptyList()).map { s -> group.cacheMap[s] ?: Selector.parse(s) }
+    val anyMatches =
+        (rule.anyMatches ?: emptyList()).map { s -> group.cacheMap[s] ?: Selector.parse(s) }
+
+    private val resetMatch = rule.resetMatch ?: group.resetMatch
     val matchDelay = rule.matchDelay ?: group.matchDelay ?: 0L
     val actionDelay = rule.actionDelay ?: group.actionDelay ?: 0L
-    val matchTime = rule.matchTime ?: group.matchTime
-    val quickFind = rule.quickFind ?: group.quickFind ?: false
+    private val matchTime = rule.matchTime ?: group.matchTime
+    private val forcedTime = rule.forcedTime ?: group.forcedTime ?: 0L
+    val matchOption = MatchOption(
+        quickFind = rule.quickFind ?: group.quickFind ?: false,
+        fastQuery = rule.fastQuery ?: group.fastQuery ?: false
+    )
+    val matchRoot = rule.matchRoot ?: group.matchRoot ?: false
+    val order = rule.order ?: group.order ?: 0
 
-    val actionCdKey = rule.actionCdKey ?: group.actionCdKey
-    val actionCd = rule.actionCd ?: if (actionCdKey != null) {
+    private val actionCdKey = rule.actionCdKey ?: group.actionCdKey
+    private val actionCd = rule.actionCd ?: if (actionCdKey != null) {
         group.rules.find { r -> r.key == actionCdKey }?.actionCd
     } else {
         null
     } ?: group.actionCd ?: 1000L
 
-    val actionMaximumKey = rule.actionMaximumKey ?: group.actionMaximumKey
-    val actionMaximum = rule.actionMaximum ?: if (actionMaximumKey != null) {
+    private val actionMaximumKey = rule.actionMaximumKey ?: group.actionMaximumKey
+    private val actionMaximum = rule.actionMaximum ?: if (actionMaximumKey != null) {
         group.rules.find { r -> r.key == actionMaximumKey }?.actionMaximum
     } else {
         null
     } ?: group.actionMaximum
 
-    var groupRules: List<ResolvedRule> = emptyList()
+    private val hasSlowSelector by lazy {
+        (matches + excludeMatches + anyMatches).any { s -> s.isSlow(matchOption) }
+    }
+    val priorityTime = rule.priorityTime ?: group.priorityTime ?: 0
+    val priorityActionMaximum = rule.priorityActionMaximum ?: group.priorityActionMaximum ?: 1
+    val priorityEnabled: Boolean
+        get() = priorityTime > 0
+
+    fun isPriority(): Boolean {
+        if (!priorityEnabled) return false
+        if (priorityActionMaximum <= actionCount.value) return false
+        if (!status.ok) return false
+        val t = System.currentTimeMillis()
+        return t - matchChangedTime < priorityTime + matchDelay
+    }
+
+    val isSlow by lazy { preKeys.isEmpty() && (matchTime == null || matchTime > 10_000L) && hasSlowSelector }
+
+    var groupToRules: Map<out RawSubscription.RawGroupProps, List<ResolvedRule>> = emptyMap()
         set(value) {
             field = value
+            val selfGroupRules = field[group] ?: emptyList()
+            val othersGroupRules =
+                (group.scopeKeys ?: emptyList()).distinct().filter { k -> k != group.key }
+                    .map { k ->
+                        field.entries.find { e -> e.key.key == k }?.value ?: emptyList()
+                    }.flatten()
+            val groupRules = selfGroupRules + othersGroupRules
+
             // 共享次数
             if (actionMaximumKey != null) {
-                val otherRule = field.find { r -> r.key == actionMaximumKey }
+                val otherRule = groupRules.find { r -> r.key == actionMaximumKey }
                 if (otherRule != null) {
                     actionCount = otherRule.actionCount
                 }
             }
             // 共享 cd
             if (actionCdKey != null) {
-                val otherRule = field.find { r -> r.key == actionCdKey }
+                val otherRule = groupRules.find { r -> r.key == actionCdKey }
                 if (otherRule != null) {
                     actionTriggerTime = otherRule.actionTriggerTime
                 }
             }
-            preRules = field.filter { otherRule ->
+            preRules = groupRules.filter { otherRule ->
                 (otherRule.key != null) && preKeys.contains(
                     otherRule.key
                 )
             }.toSet()
         }
 
-    var preRules = emptySet<ResolvedRule>()
+    private var preRules = emptySet<ResolvedRule>()
     val hasNext = group.rules.any { r -> r.preKeys?.any { k -> k == rule.key } == true }
 
     var actionDelayTriggerTime = 0L
@@ -76,7 +116,12 @@ sealed class ResolvedRule(
         return false
     }
 
-    var actionTriggerTime = Value(0L)
+    fun checkForced(): Boolean {
+        if (forcedTime <= 0) return false
+        return System.currentTimeMillis() < matchChangedTime + matchDelay + forcedTime
+    }
+
+    private var actionTriggerTime = Value(0L)
     fun trigger() {
         actionTriggerTime.value = System.currentTimeMillis()
         lastTriggerTime = actionTriggerTime.value
@@ -90,7 +135,7 @@ sealed class ResolvedRule(
 
     var matchChangedTime = 0L
 
-    val matchLimitTime = (matchTime ?: 0) + matchDelay
+    private val matchLimitTime = (matchTime ?: 0) + matchDelay
 
     val resetMatchTypeWhenActivity = when (resetMatch) {
         "app" -> false
@@ -98,19 +143,16 @@ sealed class ResolvedRule(
         else -> true
     }
 
-    fun query(nodeInfo: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (nodeInfo == null) return null
-        var target: AccessibilityNodeInfo? = null
-        for (selector in matches) {
-            target = nodeInfo.querySelector(selector, quickFind) ?: return null
-        }
-        for (selector in excludeMatches) {
-            if (nodeInfo.querySelector(selector, quickFind) != null) return null
-        }
-        return target
-    }
+    private val performer = ActionPerformer.getAction(rule.action ?: rule.position?.let {
+        ActionPerformer.ClickCenter.action
+    })
 
-    val performAction = getActionFc(rule.action)
+    fun performAction(
+        context: AccessibilityService,
+        node: AccessibilityNodeInfo
+    ): ActionResult {
+        return performer.perform(context, node, rule.position)
+    }
 
     var matchDelayJob: Job? = null
 
@@ -121,12 +163,8 @@ sealed class ResolvedRule(
                     return RuleStatus.Status1 // 达到最大执行次数
                 }
             }
-            if (preRules.isNotEmpty()) { // 需要提前点击某个规则
-                return if (preRules.any { it === lastTriggerRule }) {
-                    RuleStatus.StatusOk
-                } else {
-                    RuleStatus.Status2
-                }
+            if (preRules.isNotEmpty() && !preRules.any { it === lastTriggerRule }) {
+                return RuleStatus.Status2 // 需要提前触发某个规则
             }
             val t = System.currentTimeMillis()
             if (matchDelay > 0 && t - matchChangedTime < matchDelay) {
@@ -140,7 +178,7 @@ sealed class ResolvedRule(
             }
             if (actionDelayTriggerTime > 0) {
                 if (actionDelayTriggerTime + actionDelay > t) {
-                    return RuleStatus.Status6 // 处于点击延迟中
+                    return RuleStatus.Status6 // 处于触发延迟中
                 }
             }
             return RuleStatus.StatusOk
@@ -151,25 +189,32 @@ sealed class ResolvedRule(
     }
 
     abstract val type: String
-    abstract fun matchActivity(topActivity: TopActivity?): Boolean
 
+    // 范围越精确, 优先级越高
+    abstract fun matchActivity(appId: String, activityId: String? = null): Boolean
 }
 
 sealed class RuleStatus(val name: String) {
     data object StatusOk : RuleStatus("ok")
     data object Status1 : RuleStatus("达到最大执行次数")
-    data object Status2 : RuleStatus("需要提前点击某个规则")
+    data object Status2 : RuleStatus("需要提前触发某个规则")
     data object Status3 : RuleStatus("处于匹配延迟")
     data object Status4 : RuleStatus("超出匹配时间")
     data object Status5 : RuleStatus("处于冷却时间")
-    data object Status6 : RuleStatus("处于点击延迟")
+    data object Status6 : RuleStatus("处于触发延迟")
+
+    val ok: Boolean
+        get() = this === StatusOk
+
+    val alive: Boolean
+        get() = this !== Status1 && this !== Status2 && this !== Status4
 }
 
 fun getFixActivityIds(
     appId: String,
     activityIds: List<String>?,
 ): List<String> {
-    activityIds ?: return emptyList()
+    if (activityIds == null || activityIds.isEmpty()) return emptyList()
     return activityIds.map { activityId ->
         if (activityId.startsWith('.')) { // .a.b.c -> com.x.y.x.a.b.c
             appId + activityId
@@ -178,5 +223,3 @@ fun getFixActivityIds(
         }
     }
 }
-
-

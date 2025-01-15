@@ -3,24 +3,27 @@ package li.songe.gkd.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,48 +34,62 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.blankj.utilcode.util.ClipboardUtils
 import com.blankj.utilcode.util.LogUtils
-import com.blankj.utilcode.util.ToastUtils
 import com.ramcosta.composedestinations.annotation.Destination
-import com.ramcosta.composedestinations.annotation.RootNavGraph
+import com.ramcosta.composedestinations.annotation.RootGraph
+import com.ramcosta.composedestinations.generated.destinations.GlobalRuleExcludePageDestination
+import com.ramcosta.composedestinations.generated.destinations.ImagePreviewPageDestination
+import com.ramcosta.composedestinations.utils.toDestinationsNavigator
 import kotlinx.coroutines.Dispatchers
+import li.songe.gkd.MainActivity
 import li.songe.gkd.data.RawSubscription
 import li.songe.gkd.data.SubsConfig
 import li.songe.gkd.db.DbSet
-import li.songe.gkd.ui.component.getDialogResult
-import li.songe.gkd.ui.destinations.GroupItemPageDestination
+import li.songe.gkd.ui.component.EmptyText
+import li.songe.gkd.ui.component.TowLineText
+import li.songe.gkd.ui.component.waitResult
+import li.songe.gkd.ui.style.EmptyHeight
+import li.songe.gkd.ui.style.itemPadding
+import li.songe.gkd.ui.style.scaffoldPadding
 import li.songe.gkd.util.LocalNavController
 import li.songe.gkd.util.ProfileTransitions
-import li.songe.gkd.util.encodeToJson5String
 import li.songe.gkd.util.json
 import li.songe.gkd.util.launchAsFn
 import li.songe.gkd.util.launchTry
-import li.songe.gkd.util.navigate
+import li.songe.gkd.util.throttle
+import li.songe.gkd.util.toast
 import li.songe.gkd.util.updateSubscription
+import li.songe.json5.encodeToJson5String
 
-@RootNavGraph
-@Destination(style = ProfileTransitions::class)
+@Destination<RootGraph>(style = ProfileTransitions::class)
 @Composable
 fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
+    val context = LocalContext.current as MainActivity
     val navController = LocalNavController.current
-    val vm = hiltViewModel<GlobalRuleVm>()
+    val vm = viewModel<GlobalRuleVm>()
     val subsItem by vm.subsItemFlow.collectAsState()
     val rawSubs = vm.subsRawFlow.collectAsState().value
     val subsConfigs by vm.subsConfigsFlow.collectAsState()
@@ -92,22 +109,27 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
             null
         )
     }
-
+    val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            TopAppBar(navigationIcon = {
+            TopAppBar(scrollBehavior = scrollBehavior, navigationIcon = {
                 IconButton(onClick = {
                     navController.popBackStack()
                 }) {
                     Icon(
-                        imageVector = Icons.Default.ArrowBack,
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = null,
                     )
                 }
             }, title = {
-                Text(text = "${rawSubs?.name ?: subsItemId}/全局规则")
+                TowLineText(
+                    title = rawSubs?.name ?: subsItemId.toString(),
+                    subtitle = "全局规则"
+                )
             })
-        }, floatingActionButton = {
+        },
+        floatingActionButton = {
             if (editable) {
                 FloatingActionButton(onClick = { showAddDlg = true }) {
                     Icon(
@@ -117,122 +139,208 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
                 }
             }
         },
-        content = { paddingValues ->
-            LazyColumn(modifier = Modifier.padding(paddingValues)) {
-                items(globalGroups, { g -> g.key }) { group ->
-                    Row(
+    ) { paddingValues ->
+        LazyColumn(
+            modifier = Modifier.scaffoldPadding(paddingValues)
+        ) {
+            items(globalGroups, { g -> g.key }) { group ->
+                Row(
+                    modifier = Modifier
+                        .background(
+                            if (group.key == focusGroupKey) MaterialTheme.colorScheme.inversePrimary else Color.Transparent
+                        )
+                        .clickable { setShowGroupItem(group) }
+                        .itemPadding(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(
                         modifier = Modifier
-                            .background(
-                                if (group.key == focusGroupKey) MaterialTheme.colorScheme.inversePrimary else Color.Transparent
-                            )
-                            .clickable { setShowGroupItem(group) }
-                            .padding(10.dp, 6.dp)
-                            .fillMaxWidth()
-                            .height(45.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight(),
-                            verticalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = group.name,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            if (group.valid) {
+                        Text(
+                            text = group.name,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        if (group.valid) {
+                            if (!group.desc.isNullOrBlank()) {
                                 Text(
-                                    text = group.desc ?: "",
+                                    text = group.desc,
                                     maxLines = 1,
                                     softWrap = false,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.fillMaxWidth(),
-                                    fontSize = 14.sp
-                                )
-                            } else {
-                                Text(
-                                    text = "非法选择器",
-                                    modifier = Modifier.fillMaxWidth(),
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.error
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
+                        } else {
+                            Text(
+                                text = "非法选择器",
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
                         }
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        if (editable) {
-                            IconButton(onClick = {
-                                setMenuGroupRaw(group)
-                            }) {
-                                Icon(
-                                    imageVector = Icons.Default.MoreVert,
-                                    contentDescription = null,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                        }
-
-                        val groupEnable = subsConfigs.find { c -> c.groupKey == group.key }?.enable
-                            ?: group.enable ?: true
-                        val subsConfig = subsConfigs.find { it.groupKey == group.key }
-                        Switch(checked = groupEnable, modifier = Modifier,
-                            onCheckedChange = vm.viewModelScope.launchAsFn { enable ->
-                                val newItem = (subsConfig?.copy(enable = enable) ?: SubsConfig(
-                                    type = SubsConfig.GlobalGroupType,
-                                    subsItemId = subsItemId,
-                                    groupKey = group.key,
-                                    enable = enable
-                                ))
-                                DbSet.subsConfigDao.insert(newItem)
-                            }
-                        )
                     }
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    var expanded by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = Modifier
+                            .wrapContentSize(Alignment.TopStart)
+                    ) {
+                        IconButton(onClick = {
+                            expanded = true
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = null,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(text = "复制")
+                                },
+                                onClick = {
+                                    expanded = false
+                                    val groupAppText = json.encodeToJson5String(group)
+                                    ClipboardUtils.copyText(groupAppText)
+                                    toast("复制成功")
+                                }
+                            )
+                            if (editable) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(text = "编辑")
+                                    },
+                                    onClick = {
+                                        expanded = false
+                                        setEditGroupRaw(group)
+                                    }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = {
+                                    Text(text = "编辑禁用")
+                                },
+                                onClick = throttle {
+                                    expanded = false
+                                    navController.toDestinationsNavigator().navigate(
+                                        GlobalRuleExcludePageDestination(
+                                            subsItemId,
+                                            group.key
+                                        )
+                                    )
+                                }
+                            )
+                            if (editable) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(text = "删除", color = MaterialTheme.colorScheme.error)
+                                    },
+                                    onClick = {
+                                        expanded = false
+                                        vm.viewModelScope.launchTry {
+                                            context.mainVm.dialogFlow.waitResult(
+                                                title = "删除规则组",
+                                                text = "确定删除 ${group.name} ?",
+                                                error = true,
+                                            )
+                                            updateSubscription(
+                                                rawSubs.copy(
+                                                    globalGroups = rawSubs.globalGroups.filter { g -> g.key != group.key }
+                                                )
+                                            )
+                                            val subsConfig =
+                                                subsConfigs.find { it.groupKey == group.key }
+                                            if (subsConfig != null) {
+                                                DbSet.subsConfigDao.delete(subsConfig)
+                                            }
+                                            DbSet.subsItemDao.updateMtime(rawSubs.id)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    val groupEnable = subsConfigs.find { c -> c.groupKey == group.key }?.enable
+                        ?: group.enable ?: true
+                    val subsConfig = subsConfigs.find { it.groupKey == group.key }
+                    Switch(
+                        checked = groupEnable, modifier = Modifier,
+                        onCheckedChange = vm.viewModelScope.launchAsFn { enable ->
+                            val newItem = (subsConfig?.copy(enable = enable) ?: SubsConfig(
+                                type = SubsConfig.GlobalGroupType,
+                                subsItemId = subsItemId,
+                                groupKey = group.key,
+                                enable = enable
+                            ))
+                            DbSet.subsConfigDao.insert(newItem)
+                        }
+                    )
                 }
-                item {
-                    Spacer(modifier = Modifier.height(40.dp))
-                    if (globalGroups.isEmpty()) {
-                        Text(
-                            text = "暂无规则",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center
-                        )
-                    }
+            }
+            item {
+                Spacer(modifier = Modifier.height(EmptyHeight))
+                if (globalGroups.isEmpty()) {
+                    EmptyText(text = "暂无规则")
+                } else if (editable) {
+                    Spacer(modifier = Modifier.height(EmptyHeight))
                 }
             }
         }
-    )
+    }
 
     if (showAddDlg && rawSubs != null) {
         var source by remember {
             mutableStateOf("")
         }
+        val inputFocused = rememberSaveable { mutableStateOf(false) }
         AlertDialog(title = { Text(text = "添加全局规则组") }, text = {
             OutlinedTextField(
                 value = source,
                 onValueChange = { source = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged {
+                        if (it.isFocused) {
+                            inputFocused.value = true
+                        }
+                    },
                 placeholder = { Text(text = "请输入规则组") },
                 maxLines = 10,
             )
-        }, onDismissRequest = { showAddDlg = false }, confirmButton = {
+        }, onDismissRequest = {
+            if (!inputFocused.value) {
+                showAddDlg = false
+            }
+        }, confirmButton = {
             TextButton(onClick = {
                 val newGroup = try {
                     RawSubscription.parseRawGlobalGroup(source)
                 } catch (e: Exception) {
-                    ToastUtils.showShort("非法规则\n${e.message ?: e}")
+                    toast("非法规则\n${e.message ?: e}")
                     return@TextButton
                 }
-                if (!newGroup.valid) {
-                    ToastUtils.showShort("非法规则:存在非法选择器")
+                if (newGroup.errorDesc != null) {
+                    toast(newGroup.errorDesc!!)
                     return@TextButton
                 }
                 if (rawSubs.globalGroups.any { g -> g.name == newGroup.name }) {
-                    ToastUtils.showShort("存在同名规则[${newGroup.name}]")
+                    toast("存在同名规则[${newGroup.name}]")
                     return@TextButton
                 }
                 val newKey = (rawSubs.globalGroups.maxByOrNull { g -> g.key }?.key ?: -1) + 1
@@ -243,7 +351,7 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
                 updateSubscription(newRawSubs)
                 vm.viewModelScope.launchTry(Dispatchers.IO) {
                     showAddDlg = false
-                    ToastUtils.showShort("添加成功")
+                    toast("添加成功")
                 }
             }, enabled = source.isNotEmpty()) {
                 Text(text = "添加")
@@ -263,26 +371,11 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
                     .padding(16.dp),
                 shape = RoundedCornerShape(16.dp),
             ) {
-                Column {
-                    Text(text = "编辑", modifier = Modifier
-                        .clickable {
-                            setEditGroupRaw(menuGroupRaw)
-                            setMenuGroupRaw(null)
-                        }
-                        .padding(16.dp)
-                        .fillMaxWidth())
-                    Text(text = "删除", modifier = Modifier
+
+                if (editable) {
+                    Text(text = "删除规则组", modifier = Modifier
                         .clickable {
                             setMenuGroupRaw(null)
-                            vm.viewModelScope.launchTry {
-                                if (!getDialogResult("是否删除${menuGroupRaw.name}")) return@launchTry
-                                updateSubscription(
-                                    rawSubs.copy(
-                                        globalGroups = rawSubs.globalGroups.filter { g -> g.key != menuGroupRaw.key }
-                                    )
-                                )
-                                DbSet.subsItemDao.updateMtime(rawSubs.id)
-                            }
                         }
                         .padding(16.dp)
                         .fillMaxWidth(),
@@ -296,19 +389,35 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
         var source by remember {
             mutableStateOf(json.encodeToJson5String(editGroupRaw))
         }
+        val focusRequester = remember { FocusRequester() }
         val oldSource = remember { source }
+        val inputFocused = rememberSaveable { mutableStateOf(false) }
         AlertDialog(
             title = { Text(text = "编辑规则组") },
             text = {
                 OutlinedTextField(
                     value = source,
                     onValueChange = { source = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .onFocusChanged {
+                            if (it.isFocused) {
+                                inputFocused.value = true
+                            }
+                        },
                     placeholder = { Text(text = "请输入规则组") },
                     maxLines = 10,
                 )
+                LaunchedEffect(null) {
+                    focusRequester.requestFocus()
+                }
             },
-            onDismissRequest = { setEditGroupRaw(null) },
+            onDismissRequest = {
+                if (!inputFocused.value) {
+                    setEditGroupRaw(null)
+                }
+            },
             dismissButton = {
                 TextButton(onClick = { setEditGroupRaw(null) }) {
                     Text(text = "取消")
@@ -317,22 +426,23 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
             confirmButton = {
                 TextButton(onClick = {
                     if (oldSource == source) {
-                        ToastUtils.showShort("规则无变动")
+                        setEditGroupRaw(null)
+                        toast("规则无变动")
                         return@TextButton
                     }
                     val newGroupRaw = try {
                         RawSubscription.parseRawGlobalGroup(source)
                     } catch (e: Exception) {
                         LogUtils.d(e)
-                        ToastUtils.showShort("非法规则:${e.message}")
+                        toast("非法规则:${e.message}")
                         return@TextButton
                     }
                     if (newGroupRaw.key != editGroupRaw.key) {
-                        ToastUtils.showShort("不能更改规则组的key")
+                        toast("不能更改规则组的key")
                         return@TextButton
                     }
-                    if (!newGroupRaw.valid) {
-                        ToastUtils.showShort("非法规则:存在非法选择器")
+                    if (newGroupRaw.errorDesc != null) {
+                        toast(newGroupRaw.errorDesc!!)
                         return@TextButton
                     }
                     setEditGroupRaw(null)
@@ -345,7 +455,7 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
                     updateSubscription(rawSubs.copy(globalGroups = newGlobalGroups))
                     vm.viewModelScope.launchTry(Dispatchers.IO) {
                         DbSet.subsItemDao.updateMtime(rawSubs.id)
-                        ToastUtils.showShort("更新成功")
+                        toast("更新成功")
                     }
                 }, enabled = source.isNotEmpty()) {
                     Text(text = "更新")
@@ -354,45 +464,39 @@ fun GlobalRulePage(subsItemId: Long, focusGroupKey: Int? = null) {
         )
     }
 
-
     if (showGroupItem != null) {
-        AlertDialog(modifier = Modifier.defaultMinSize(300.dp),
+        AlertDialog(
             onDismissRequest = { setShowGroupItem(null) },
             title = {
-                Text(text = showGroupItem.name)
+                Text(text = "规则组详情")
             },
             text = {
                 Column {
-                    if (showGroupItem.enable == false) {
-                        Text(text = "该规则组默认不启用")
-                        Spacer(modifier = Modifier.height(10.dp))
-                    }
+                    Text(text = showGroupItem.name)
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(text = showGroupItem.desc ?: "")
                 }
             },
             confirmButton = {
-                Row {
-                    if (showGroupItem.allExampleUrls.isNotEmpty()) {
-                        TextButton(onClick = {
-                            setShowGroupItem(null)
-                            navController.navigate(
-                                GroupItemPageDestination(
-                                    subsInt = subsItemId,
-                                    groupKey = showGroupItem.key
-                                )
+                if (showGroupItem.allExampleUrls.isNotEmpty()) {
+                    TextButton(onClick = throttle {
+                        setShowGroupItem(null)
+                        navController.toDestinationsNavigator().navigate(
+                            ImagePreviewPageDestination(
+                                title = showGroupItem.name,
+                                uris = showGroupItem.allExampleUrls.toTypedArray()
                             )
-                        }) {
-                            Text(text = "查看图片")
-                        }
-                    }
-                    TextButton(onClick = {
-                        val groupAppText = json.encodeToJson5String(showGroupItem)
-                        ClipboardUtils.copyText(groupAppText)
-                        ToastUtils.showShort("复制成功")
+                        )
                     }) {
-                        Text(text = "复制规则组")
+                        Text(text = "查看图片")
                     }
                 }
-            })
+            },
+            dismissButton = {
+                TextButton(onClick = { setShowGroupItem(null) }) {
+                    Text(text = "关闭")
+                }
+            }
+        )
     }
 }

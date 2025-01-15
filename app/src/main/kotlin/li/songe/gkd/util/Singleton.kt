@@ -1,27 +1,31 @@
 package li.songe.gkd.util
 
 import android.os.Build
-import coil.ImageLoader
-import coil.decode.GifDecoder
-import coil.decode.ImageDecoderDecoder
-import coil.disk.DiskCache
+import coil3.ImageLoader
+import coil3.disk.DiskCache
+import coil3.gif.AnimatedImageDecoder
+import coil3.gif.GifDecoder
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import com.tencent.mmkv.MMKV
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.ContentType
 import io.ktor.serialization.kotlinx.json.json
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import li.songe.gkd.app
+import okhttp3.OkHttpClient
+import okio.Path.Companion.toOkioPath
+import java.text.Collator
+import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.toJavaDuration
 
 
-val kv by lazy { MMKV.mmkvWithID("kv")!! }
+val kv by lazy { MMKV.mmkvWithID("kv") }
 
-@OptIn(ExperimentalSerializationApi::class)
 val json by lazy {
     Json {
-        isLenient = true
         ignoreUnknownKeys = true
         explicitNulls = false
         encodeDefaults = true
@@ -29,10 +33,8 @@ val json by lazy {
 }
 
 val keepNullJson by lazy {
-    Json {
-        isLenient = true
-        ignoreUnknownKeys = true
-        encodeDefaults = true
+    Json(from = json) {
+        explicitNulls = true
     }
 }
 
@@ -48,14 +50,32 @@ val client by lazy {
 }
 
 val imageLoader by lazy {
-    ImageLoader.Builder(app).components {
-        if (Build.VERSION.SDK_INT >= 28) {
-            add(ImageDecoderDecoder.Factory())
-        } else {
-            add(GifDecoder.Factory())
+    ImageLoader.Builder(app)
+        .diskCache {
+            DiskCache.Builder()
+                .directory(imageCacheDir.toOkioPath())
+                .maxSizePercent(0.1)
+                .build()
         }
-    }.diskCache {
-        DiskCache.Builder().directory(imageCacheDir).build()
-    }.build()
+        .components {
+            if (Build.VERSION.SDK_INT >= 28) {
+                add(AnimatedImageDecoder.Factory())
+            } else {
+                add(GifDecoder.Factory())
+            }
+            add(OkHttpNetworkFetcherFactory(
+                callFactory = {
+                    OkHttpClient.Builder()
+                        .connectTimeout(30.seconds.toJavaDuration())
+                        .readTimeout(30.seconds.toJavaDuration())
+                        .writeTimeout(30.seconds.toJavaDuration())
+                        .build()
+                }
+            ))
+        }
+        .build()
 }
+
+
+val collator by lazy { Collator.getInstance(Locale.CHINESE)!! }
 
